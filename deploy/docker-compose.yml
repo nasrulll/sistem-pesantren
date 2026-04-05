@@ -1,0 +1,267 @@
+version: '3.8'
+
+services:
+  # Database Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: pesantren_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pesantren_db
+      POSTGRES_USER: pesantren
+      POSTGRES_PASSWORD: Pesantren2026!
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - pesantren_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pesantren"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: pesantren_redis
+    restart: unless-stopped
+    command: redis-server --requirepass RedisPesantren2026!
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - pesantren_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pesantren_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@pesantren.local
+      PGADMIN_DEFAULT_PASSWORD: PgAdmin2026!
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    networks:
+      - pesantren_network
+    depends_on:
+      - postgres
+
+  # Backend API (NestJS)
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: pesantren_backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://pesantren:Pesantren2026!@postgres:5432/pesantren_db
+      REDIS_URL: redis://default:RedisPesantren2026!@redis:6379
+      JWT_SECRET: JwtSecretPesantren2026SecureKey
+      PORT: 3000
+    volumes:
+      - ../backend:/app
+      - /app/node_modules
+      - ../uploads:/app/uploads
+      - ../logs/api:/app/logs
+    ports:
+      - "3000:3000"
+    networks:
+      - pesantren_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Admin Panel (Laravel)
+  admin:
+    build:
+      context: ../admin
+      dockerfile: Dockerfile
+    container_name: pesantren_admin
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      APP_DEBUG: false
+      APP_URL: http://localhost:8000
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: pesantren_db
+      DB_USERNAME: pesantren
+      DB_PASSWORD: Pesantren2026!
+      REDIS_HOST: redis
+      REDIS_PASSWORD: RedisPesantren2026!
+      REDIS_PORT: 6379
+    volumes:
+      - ../admin:/var/www/html
+      - ../uploads:/var/www/html/storage/app/public
+      - ../logs/admin:/var/www/html/storage/logs
+    ports:
+      - "8000:8000"
+    networks:
+      - pesantren_network
+    depends_on:
+      - backend
+      - postgres
+      - redis
+
+  # Web Frontend (Next.js)
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    container_name: pesantren_web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: http://localhost:3000/api
+      PORT: 3001
+    volumes:
+      - ../web:/app
+      - /app/node_modules
+      - ../logs/web:/app/logs
+    ports:
+      - "3001:3001"
+    networks:
+      - pesantren_network
+    depends_on:
+      - backend
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: pesantren_nginx
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/sites:/etc/nginx/conf.d
+      - ../logs/nginx:/var/log/nginx
+      - ../uploads:/var/www/uploads
+      - ./ssl:/etc/nginx/ssl
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - pesantren_network
+    depends_on:
+      - backend
+      - admin
+      - web
+
+  # Monitoring (Prometheus + Grafana)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pesantren_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - pesantren_network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pesantren_grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: GrafanaPesantren2026!
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3002:3000"
+    networks:
+      - pesantren_network
+    depends_on:
+      - prometheus
+
+  # Backup Service
+  backup:
+    image: prodrigestivill/postgres-backup-local:latest
+    container_name: pesantren_backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: pesantren_db
+      POSTGRES_USER: pesantren
+      POSTGRES_PASSWORD: Pesantren2026!
+      SCHEDULE: "@daily"
+      BACKUP_KEEP_DAYS: 7
+      BACKUP_KEEP_WEEKS: 4
+      BACKUP_KEEP_MONTHS: 6
+    volumes:
+      - backup_data:/backups
+    networks:
+      - pesantren_network
+    depends_on:
+      - postgres
+
+  # WhatsApp Bot Service (Optional)
+  whatsapp-bot:
+    build:
+      context: ../whatsapp-bot
+      dockerfile: Dockerfile
+    container_name: pesantren_whatsapp_bot
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_URL: http://backend:3000
+      WHATSAPP_SESSION_PATH: /app/sessions
+    volumes:
+      - ../whatsapp-bot:/app
+      - whatsapp_sessions:/app/sessions
+      - ../logs/whatsapp:/app/logs
+    networks:
+      - pesantren_network
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  backup_data:
+    driver: local
+  whatsapp_sessions:
+    driver: local
+
+networks:
+  pesantren_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
